@@ -2,31 +2,63 @@ package sockit
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"slices"
 	"strconv"
-	"strings"
 )
 
 type Proxy struct {
 	socket net.Listener
 
 	address string
+	_logger *slog.Logger
 }
 
-func Listen(address string) (*Proxy, error) {
+type ProxyOption func(*Proxy) error
+
+func Listen(address string, options ...ProxyOption) (*Proxy, error) {
 	socket, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tcp listener: %w", err)
 	}
 
-	return &Proxy{
-		socket:  socket,
-		address: strings.Split(address, ":")[0],
-	}, nil
+	p := &Proxy{
+		socket: socket,
+	}
+
+	for _, o := range options {
+		err := o(p)
+		if err != nil {
+			return nil, fmt.Errorf("failed to apply option: %w", err)
+		}
+	}
+
+	err = p.applyDefaults()
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply defaults: %w", err)
+	}
+
+	return p, nil
+}
+
+func WithLogger(logger *slog.Logger) ProxyOption {
+	return func(p *Proxy) error {
+		p._logger = logger
+		return nil
+	}
+}
+
+func (p *Proxy) applyDefaults() error {
+	if p._logger == nil {
+		p._logger = slog.Default()
+	}
+
+	return nil
 }
 
 func (p *Proxy) ProxyConnections() error {
@@ -37,8 +69,6 @@ func (p *Proxy) ProxyConnections() error {
 			return fmt.Errorf("naughty connection: %w", err)
 		}
 
-		fmt.Printf("Accepted connection from %s\n", conn.RemoteAddr())
-
 		go p.initProxy(conn)
 	}
 }
@@ -46,27 +76,27 @@ func (p *Proxy) ProxyConnections() error {
 func (p *Proxy) initProxy(conn net.Conn) {
 	defer conn.Close()
 
-	fmt.Printf("Performing handshake with %s\n", conn.RemoteAddr())
+	logger := p._logger.With(slog.String("conn", conn.RemoteAddr().String()))
+	logger.Info("Accepted connection")
 
-	err := p.handshake(conn)
+	err := p.handshake(conn, logger)
 	if err != nil {
-		fmt.Printf("err: %v", err)
+		logger.Error("Failed handshake", slog.String("error", err.Error()))
 		conn.Write([]byte(err.Error()))
 		return
 	}
 
-	fmt.Printf("Handling request for %s\n", conn.RemoteAddr())
-
-	err = p.handleRequest(conn)
+	err = p.handleRequest(conn, logger)
 	if err != nil {
-		fmt.Printf("err: %v", err)
+		logger.Error("Failed reply", slog.String("error", err.Error()))
 		conn.Write([]byte(err.Error()))
 		return
 	}
 }
 
-func (p *Proxy) handshake(conn net.Conn) error {
-	fmt.Println("Reading 2 bytes")
+func (p *Proxy) handshake(conn net.Conn, logger *slog.Logger) error {
+	logger.Debug("Performing handshake with %s\n", conn.RemoteAddr())
+
 	buf := make([]byte, 2)
 	_, err := io.ReadFull(conn, buf)
 	if err != nil {
@@ -77,16 +107,11 @@ func (p *Proxy) handshake(conn net.Conn) error {
 		return errors.New("invalid version")
 	}
 
-	fmt.Println("Reading methods")
-	fmt.Println(buf)
-
 	methods := make([]byte, buf[1])
 	_, err = io.ReadFull(conn, methods)
 	if err != nil {
 		return err
 	}
-
-	fmt.Println(methods)
 
 	if !slices.Contains(methods, 0x00) {
 		return errors.New("unsupported method(s)")
@@ -100,8 +125,9 @@ func (p *Proxy) handshake(conn net.Conn) error {
 	return nil
 }
 
-func (p *Proxy) handleRequest(conn net.Conn) error {
-	fmt.Println("Reading 4 bytes")
+func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
+	logger.Debug("Handling request")
+
 	buf := make([]byte, 4)
 	_, err := io.ReadFull(conn, buf)
 	if err != nil {
@@ -120,14 +146,10 @@ func (p *Proxy) handleRequest(conn net.Conn) error {
 		return errors.New("malformed request")
 	}
 
-	fmt.Println("Reading address")
-
 	ip, err := p.parseAddress(buf[3], conn)
 	if err != nil {
 		return errors.New("bad host")
 	}
-
-	fmt.Println("Reading port")
 
 	portOctets := make([]byte, 2)
 	_, err = io.ReadFull(conn, portOctets)
@@ -142,7 +164,7 @@ func (p *Proxy) handleRequest(conn net.Conn) error {
 		return err
 	}
 
-	_, bindPortStr, err := net.SplitHostPort(dst.RemoteAddr().String())
+	bindAddrStr, bindPortStr, err := net.SplitHostPort(dst.RemoteAddr().String())
 	if err != nil {
 		return err
 	}
@@ -154,13 +176,13 @@ func (p *Proxy) handleRequest(conn net.Conn) error {
 
 	var response []byte
 	response = append(response, 0x05, 0x00, 0x00, 0x01)
-	response = append(response, net.ParseIP(p.address)[12:]...)
+	response = append(response, net.ParseIP(bindAddrStr).To4()...)
 
 	portBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(portBytes, uint16(bindPort))
 	response = append(response, portBytes...)
 
-	fmt.Printf("Big response %v\n", response)
+	logger.Debug("Sending handshake reply", slog.String("buffer", hex.EncodeToString(response)))
 
 	conn.Write(response)
 
@@ -171,8 +193,6 @@ func (p *Proxy) handleRequest(conn net.Conn) error {
 			if err != nil {
 				return
 			}
-
-			fmt.Println(string(srcBuffer[:n]))
 
 			_, err = conn.Write(srcBuffer[:n])
 			if err != nil {
@@ -187,8 +207,6 @@ func (p *Proxy) handleRequest(conn net.Conn) error {
 		if err != nil {
 			return err
 		}
-
-		fmt.Println(string(dstBuffer[:n]))
 
 		_, err = dst.Write(dstBuffer[:n])
 		if err != nil {
