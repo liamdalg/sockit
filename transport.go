@@ -20,3 +20,9 @@ func copyStreams(a io.ReadWriteCloser, b io.ReadWriteCloser) error {
 
 	return g.Wait()
 }
+
+func readN(reader io.Reader, n int) ([]byte, error) {
+	buf := make([]byte, n)
+	_, err := io.ReadFull(reader, buf)
+	return buf, err
+}
