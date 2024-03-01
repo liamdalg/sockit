@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"strconv"
 )
 
 type Proxy struct {
@@ -21,10 +20,10 @@ type Proxy struct {
 type ProxyOption func(*Proxy) error
 
 const (
-	addressTypeIPV4   = 0x01
-	addressTypeIPV6   = 0x03
-	addressTypeDomain = 0x04
-	socksVersion      = 0x05
+	addressTypeIPV4   byte = 0x01
+	addressTypeDomain byte = 0x03
+	addressTypeIPV6   byte = 0x04
+	socksVersion      byte = 0x05
 )
 
 func Listen(address string, options ...ProxyOption) (*Proxy, error) {
@@ -166,22 +165,22 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 		return err
 	}
 
-	bindAddrStr, bindPortStr, err := net.SplitHostPort(dst.RemoteAddr().String())
+	bind, err := netip.ParseAddrPort(dst.RemoteAddr().String())
 	if err != nil {
 		return err
 	}
 
-	bindPort, err := strconv.Atoi(bindPortStr)
-	if err != nil {
-		return err
+	addrType := addressTypeIPV4
+	if bind.Addr().Is6() {
+		addrType = 16
 	}
 
 	var response []byte
-	response = append(response, socksVersion, 0x00, 0x00, 0x01)
-	response = append(response, net.ParseIP(bindAddrStr).To4()...)
+	response = append(response, socksVersion, 0x00, 0x00, addrType)
+	response = append(response, bind.Addr().AsSlice()...)
 
 	portBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(portBytes, uint16(bindPort))
+	binary.BigEndian.PutUint16(portBytes, bind.Port())
 	response = append(response, portBytes...)
 
 	logger.Debug("Sending handshake reply", slog.String("buffer", hex.EncodeToString(response)))
