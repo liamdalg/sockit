@@ -118,7 +118,7 @@ func (p *Proxy) handleConnection(conn net.Conn) {
 }
 
 func (p *Proxy) handshake(conn net.Conn) error {
-	buf, err := readN(conn, 2)
+	buf, err := readBytes(conn, 1)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func (p *Proxy) handshake(conn net.Conn) error {
 		return errInvalidVersion
 	}
 
-	methods, err := readN(conn, int(buf[1]))
+	methods, err := readBytesFromLength(conn)
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func (p *Proxy) handshake(conn net.Conn) error {
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	logger.Debug("Handling request")
 
-	buf, err := readN(conn, 4)
+	buf, err := readBytes(conn, 4)
 	if err != nil {
 		return err
 	}
@@ -183,7 +183,7 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 		return errors.New("bad host")
 	}
 
-	portOctets, err := readN(conn, 2)
+	portOctets, err := readBytes(conn, 2)
 	if err != nil {
 		return err
 	}
@@ -222,12 +222,7 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 
 func parseAddress(addrType byte, conn net.Conn) (netip.Addr, error) {
 	if addrType == addressTypeDomain {
-		len, err := readN(conn, 1)
-		if err != nil {
-			return netip.Addr{}, err
-		}
-
-		domain, err := readN(conn, int(len[0]))
+		domain, err := readBytesFromLength(conn)
 		if err != nil {
 			return netip.Addr{}, err
 		}
@@ -254,7 +249,7 @@ func parseAddress(addrType byte, conn net.Conn) (netip.Addr, error) {
 		return netip.Addr{}, errors.New("malformed address")
 	}
 
-	buf, err := readN(conn, byteLength)
+	buf, err := readBytes(conn, byteLength)
 	if err != nil {
 		return netip.Addr{}, err
 	}

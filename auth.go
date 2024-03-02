@@ -35,7 +35,7 @@ func WithUserPassAuth(users ...User) ProxyOption {
 }
 
 func (u *UserPassMethod) Negotiate(conn net.Conn) error {
-	version, err := readN(conn, 1)
+	version, err := readBytes(conn, 1)
 	if err != nil {
 		return err
 	}
@@ -44,22 +44,12 @@ func (u *UserPassMethod) Negotiate(conn net.Conn) error {
 		return errInvalidVersion
 	}
 
-	userLength, err := readN(conn, 1)
+	username, err := readBytesFromLength(conn)
 	if err != nil {
 		return err
 	}
 
-	username, err := readN(conn, int(userLength[0]))
-	if err != nil {
-		return err
-	}
-
-	passLength, err := readN(conn, 1)
-	if err != nil {
-		return err
-	}
-
-	password, err := readN(conn, int(passLength[0]))
+	password, err := readBytesFromLength(conn)
 	if err != nil {
 		return err
 	}
