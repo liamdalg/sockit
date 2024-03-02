@@ -8,13 +8,23 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"slices"
 )
 
 type Proxy struct {
-	socket net.Listener
+	socket  net.Listener
+	methods map[byte]MethodNegotiator
 
 	_logger *slog.Logger
+}
+
+type MethodNegotiator interface {
+	Negotiate(conn net.Conn) error
+}
+
+type DefaultMethod struct{}
+
+func (*DefaultMethod) Negotiate(net.Conn) error {
+	return nil
 }
 
 type ProxyOption func(*Proxy) error
@@ -63,6 +73,11 @@ func WithLogger(logger *slog.Logger) ProxyOption {
 }
 
 func (p *Proxy) applyDefaults() error {
+	if p.methods == nil {
+		p.methods = map[byte]MethodNegotiator{}
+		p.methods[0x00] = &DefaultMethod{}
+	}
+
 	if p._logger == nil {
 		p._logger = slog.Default()
 	}
@@ -89,23 +104,20 @@ func (p *Proxy) handleConnection(conn net.Conn) {
 	logger := p._logger.With(slog.String("conn", conn.RemoteAddr().String()))
 
 	logger.Debug("Performing handshake")
-	err := handshake(conn)
+	err := p.handshake(conn)
 	if err != nil {
 		logger.Error("Failed handshake", slog.String("error", err.Error()))
-		unsupported := []byte{socksVersion, 0xFF}
-		conn.Write(unsupported)
 		return
 	}
 
 	err = p.handleRequest(conn, logger)
 	if err != nil {
 		logger.Error("Failed reply", slog.String("error", err.Error()))
-		conn.Write([]byte(err.Error()))
 		return
 	}
 }
 
-func handshake(conn net.Conn) error {
+func (p *Proxy) handshake(conn net.Conn) error {
 	buf, err := readN(conn, 2)
 	if err != nil {
 		return err
@@ -120,16 +132,30 @@ func handshake(conn net.Conn) error {
 		return err
 	}
 
-	if !slices.Contains(methods, 0x00) {
+	method := byte(0xFF)
+	for _, m := range methods {
+		if _, ok := p.methods[m]; ok {
+			method = m
+		}
+	}
+
+	if method == 0xFF {
+		_, err := conn.Write([]byte{socksVersion, 0xFF})
+		if err != nil {
+			return err
+		}
+
 		return errors.New("unsupported method(s)")
 	}
 
-	_, err = conn.Write([]byte{socksVersion, 0x00})
+	_, err = conn.Write([]byte{socksVersion, method})
 	if err != nil {
 		return errors.New("failed to write response")
 	}
 
-	return nil
+	err = p.methods[method].Negotiate(conn)
+
+	return err
 }
 
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
