@@ -26,6 +26,10 @@ const (
 	socksVersion      byte = 0x05
 )
 
+var (
+	errInvalidVersion = errors.New("unsupported protocol version")
+)
+
 func Listen(address string, options ...ProxyOption) (*Proxy, error) {
 	socket, err := net.Listen("tcp", address)
 	if err != nil {
@@ -74,6 +78,7 @@ func (p *Proxy) Start() error {
 			return fmt.Errorf("naughty connection: %w", err)
 		}
 
+		p._logger.Info("Accepted connection")
 		go p.handleConnection(conn)
 	}
 }
@@ -82,12 +87,13 @@ func (p *Proxy) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	logger := p._logger.With(slog.String("conn", conn.RemoteAddr().String()))
-	logger.Info("Accepted connection")
 
-	err := p.handshake(conn, logger)
+	logger.Debug("Performing handshake")
+	err := handshake(conn)
 	if err != nil {
 		logger.Error("Failed handshake", slog.String("error", err.Error()))
-		conn.Write([]byte(err.Error()))
+		unsupported := []byte{socksVersion, 0xFF}
+		conn.Write(unsupported)
 		return
 	}
 
@@ -99,16 +105,14 @@ func (p *Proxy) handleConnection(conn net.Conn) {
 	}
 }
 
-func (p *Proxy) handshake(conn net.Conn, logger *slog.Logger) error {
-	logger.Debug("Performing handshake with %s\n", conn.RemoteAddr())
-
+func handshake(conn net.Conn) error {
 	buf, err := readN(conn, 2)
 	if err != nil {
 		return err
 	}
 
 	if buf[0] != socksVersion {
-		return errors.New("invalid version")
+		return errInvalidVersion
 	}
 
 	methods, err := readN(conn, int(buf[1]))
