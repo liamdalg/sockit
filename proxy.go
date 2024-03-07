@@ -190,22 +190,27 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 
 	port := binary.BigEndian.Uint16(portOctets)
 
-	dst, err := net.Dial("tcp", fmt.Sprintf("%s:%d", ip.String(), port))
+	dst, err := net.DialTCP("tcp", nil, &net.TCPAddr{
+		IP:   ip.AsSlice(),
+		Port: int(port),
+	})
 	if err != nil {
 		return err
 	}
 
-	bind, err := netip.ParseAddrPort(dst.RemoteAddr().String())
+	bind, err := netip.ParseAddrPort(dst.LocalAddr().String())
 	if err != nil {
 		return err
 	}
 
+	ipLength := 4
 	addrType := addressTypeIPV4
 	if bind.Addr().Is6() {
-		addrType = 16
+		addrType = addressTypeIPV6
+		ipLength = 16
 	}
 
-	var response []byte
+	response := make([]byte, 0, 4+ipLength+2)
 	response = append(response, socksVersion, 0x00, 0x00, addrType)
 	response = append(response, bind.Addr().AsSlice()...)
 
