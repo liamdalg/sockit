@@ -29,6 +29,11 @@ func (*DefaultMethod) Negotiate(net.Conn) error {
 
 type ProxyOption func(*Proxy) error
 
+type Command interface {
+	Init(netip.AddrPort) (netip.AddrPort, error)
+	Handle() error
+}
+
 const (
 	addressTypeIPV4   byte = 0x01
 	addressTypeDomain byte = 0x03
@@ -37,8 +42,44 @@ const (
 )
 
 var (
-	errInvalidVersion = errors.New("unsupported protocol version")
+	errInvalidVersion = &SocksError{
+		Message: "unsupported socks version",
+		Code:    0xFF,
+	}
+	errNoAcceptableMethods = &SocksError{
+		Message: "no acceptable methods",
+		Code:    0xFF,
+	}
+
+	errNetworkUnreachable = &SocksError{
+		Message: "network unreachable",
+		Code:    0x03,
+	}
+	errHostUnreachable = &SocksError{
+		Message: "host unreachable",
+		Code:    0x04,
+	}
+	errUnsupportedCommand = &SocksError{
+		Message: "unsupported command",
+		Code:    0x07,
+	}
+
+	unspecifiedAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
 )
+
+type SocksError struct {
+	Message string
+	Code    byte
+	Inner   error
+}
+
+func (e *SocksError) Error() string {
+	return e.Message
+}
+
+func (e *SocksError) Unwrap() error {
+	return e.Inner
+}
 
 func Listen(address string, options ...ProxyOption) (*Proxy, error) {
 	socket, err := net.Listen("tcp", address)
@@ -145,12 +186,12 @@ func (p *Proxy) handshake(conn net.Conn) error {
 			return err
 		}
 
-		return errors.New("unsupported method(s)")
+		return errNoAcceptableMethods
 	}
 
 	_, err = conn.Write([]byte{socksVersion, method})
 	if err != nil {
-		return errors.New("failed to write response")
+		return err
 	}
 
 	err = p.methods[method].Negotiate(conn)
@@ -161,48 +202,73 @@ func (p *Proxy) handshake(conn net.Conn) error {
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	logger.Debug("Handling request")
 
-	buf, err := readBytes(conn, 4)
+	handler, ip, err := readRequest(conn)
 	if err != nil {
+		var socksErr *SocksError
+		if errors.As(err, &socksErr) {
+			sendReply(conn, socksErr.Code, unspecifiedAddr, logger)
+		} else {
+			sendReply(conn, 0x01, unspecifiedAddr, logger)
+		}
 		return err
 	}
 
+	bind, socksErr := handler.Init(ip)
+	if socksErr != nil {
+		var socksErr *SocksError
+		if errors.As(err, &socksErr) {
+			sendReply(conn, socksErr.Code, unspecifiedAddr, logger)
+		} else {
+			sendReply(conn, 0x01, unspecifiedAddr, logger)
+		}
+		return err
+	}
+
+	replyErr := sendReply(conn, 0x00, bind, logger)
+	if replyErr != nil {
+		return replyErr
+	}
+
+	return handler.Handle()
+}
+
+func readRequest(conn net.Conn) (Command, netip.AddrPort, error) {
+	buf, err := readBytes(conn, 4)
+	if err != nil {
+		return nil, netip.AddrPort{}, err
+	}
+
 	if buf[0] != socksVersion {
-		return errors.New("unsupported version")
+		return nil, netip.AddrPort{}, errInvalidVersion
 	}
 
-	if buf[1] != 0x01 {
-		return errors.New("unsupported command")
-	}
+	var command Command
 
-	if buf[2] != 0x00 {
-		return errors.New("malformed request")
+	switch buf[1] {
+	case 0x01:
+		command = &connect{src: conn}
+	case 0x02:
+	case 0x03:
+	default:
+		return nil, netip.AddrPort{}, errUnsupportedCommand
 	}
 
 	ip, err := parseAddress(buf[3], conn)
 	if err != nil {
-		return errors.New("bad host")
+		return nil, netip.AddrPort{}, errHostUnreachable
 	}
 
 	portOctets, err := readBytes(conn, 2)
 	if err != nil {
-		return err
+		return nil, netip.AddrPort{}, err
 	}
 
 	port := binary.BigEndian.Uint16(portOctets)
 
-	dst, err := net.DialTCP("tcp", nil, &net.TCPAddr{
-		IP:   ip.AsSlice(),
-		Port: int(port),
-	})
-	if err != nil {
-		return err
-	}
+	return command, netip.AddrPortFrom(ip, port), nil
+}
 
-	bind, err := netip.ParseAddrPort(dst.LocalAddr().String())
-	if err != nil {
-		return err
-	}
-
+func sendReply(conn net.Conn, status byte, bind netip.AddrPort, logger *slog.Logger) error {
 	ipLength := 4
 	addrType := addressTypeIPV4
 	if bind.Addr().Is6() {
@@ -211,7 +277,7 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	}
 
 	response := make([]byte, 0, 4+ipLength+2)
-	response = append(response, socksVersion, 0x00, 0x00, addrType)
+	response = append(response, socksVersion, status, 0x00, addrType)
 	response = append(response, bind.Addr().AsSlice()...)
 
 	portBytes := make([]byte, 2)
@@ -220,9 +286,8 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 
 	logger.Debug("Sending handshake reply", slog.String("buffer", hex.EncodeToString(response)))
 
-	conn.Write(response)
-
-	return copyStreams(conn, dst)
+	_, err := conn.Write(response)
+	return err
 }
 
 func parseAddress(addrType byte, conn net.Conn) (netip.Addr, error) {
