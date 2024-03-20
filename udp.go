@@ -3,6 +3,7 @@ package sockit
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -46,11 +47,15 @@ func (u *udpAssociate) Init(ip netip.AddrPort) (netip.AddrPort, error) {
 }
 
 func (u *udpAssociate) Handle() error {
+	go u.waitForClose()
 	for {
 		// TODO: improve buffers
 		buf := make([]byte, 2048)
 		n, _, _, _, err := u.listener.ReadMsgUDPAddrPort(buf, nil)
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			return err
 		}
 
@@ -101,6 +106,17 @@ func (u *udpAssociate) Handle() error {
 		if err != nil {
 			u.logger.Debug("Stupid writing", slog.String("err", err.Error()))
 			continue
+		}
+	}
+}
+
+func (u *udpAssociate) waitForClose() {
+	for {
+		buf := make([]byte, 1)
+		_, err := u.src.Read(buf)
+		if err != nil {
+			u.listener.Close()
+			return
 		}
 	}
 }
