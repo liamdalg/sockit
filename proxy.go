@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -202,7 +203,7 @@ func (p *Proxy) handshake(conn net.Conn) error {
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	logger.Debug("Handling request")
 
-	handler, ip, err := readRequest(conn)
+	handler, ip, err := readRequest(conn, logger)
 	if err != nil {
 		var socksErr *SocksError
 		if errors.As(err, &socksErr) {
@@ -232,7 +233,7 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	return handler.Handle()
 }
 
-func readRequest(conn net.Conn) (Command, netip.AddrPort, error) {
+func readRequest(conn net.Conn, logger *slog.Logger) (Command, netip.AddrPort, error) {
 	buf, err := readBytes(conn, 4)
 	if err != nil {
 		return nil, netip.AddrPort{}, err
@@ -247,8 +248,8 @@ func readRequest(conn net.Conn) (Command, netip.AddrPort, error) {
 	switch buf[1] {
 	case 0x01:
 		command = &connect{src: conn}
-	case 0x02:
 	case 0x03:
+		command = &udpAssociate{src: conn, logger: logger}
 	default:
 		return nil, netip.AddrPort{}, errUnsupportedCommand
 	}
@@ -290,9 +291,9 @@ func sendReply(conn net.Conn, status byte, bind netip.AddrPort, logger *slog.Log
 	return err
 }
 
-func parseAddress(addrType byte, conn net.Conn) (netip.Addr, error) {
+func parseAddress(addrType byte, reader io.Reader) (netip.Addr, error) {
 	if addrType == addressTypeDomain {
-		domain, err := readBytesFromLength(conn)
+		domain, err := readBytesFromLength(reader)
 		if err != nil {
 			return netip.Addr{}, err
 		}
@@ -319,7 +320,7 @@ func parseAddress(addrType byte, conn net.Conn) (netip.Addr, error) {
 		return netip.Addr{}, errors.New("malformed address")
 	}
 
-	buf, err := readBytes(conn, byteLength)
+	buf, err := readBytes(reader, byteLength)
 	if err != nil {
 		return netip.Addr{}, err
 	}
