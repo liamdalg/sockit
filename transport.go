@@ -21,6 +21,16 @@ func copyStreams(a io.ReadWriteCloser, b io.ReadWriteCloser) error {
 	return g.Wait()
 }
 
+func waitForClose(src io.ReadCloser, dst io.Closer) {
+	for {
+		buf := make([]byte, 1)
+		_, err := src.Read(buf)
+		if err != nil {
+			dst.Close()
+		}
+	}
+}
+
 func readBytes(reader io.Reader, n int) ([]byte, error) {
 	buf := make([]byte, n)
 	_, err := io.ReadFull(reader, buf)

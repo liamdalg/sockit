@@ -30,10 +30,14 @@ func (*DefaultMethod) Negotiate(net.Conn) error {
 
 type ProxyOption func(*Proxy) error
 
-type Command interface {
-	Init(netip.AddrPort) (netip.AddrPort, error)
-	Handle() error
+type CommandArgs struct {
+	conn     net.Conn
+	dst      netip.AddrPort
+	callback func(netip.AddrPort) error
+	logger   *slog.Logger
 }
+
+type CommandFunc func(*CommandArgs) error
 
 const (
 	addressTypeIPV4   byte = 0x01
@@ -203,7 +207,7 @@ func (p *Proxy) handshake(conn net.Conn) error {
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	logger.Debug("Handling request")
 
-	handler, ip, err := readRequest(conn, logger)
+	handler, ip, err := readRequest(conn)
 	if err != nil {
 		var socksErr *SocksError
 		if errors.As(err, &socksErr) {
@@ -214,26 +218,19 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 		return err
 	}
 
-	bind, socksErr := handler.Init(ip)
-	if socksErr != nil {
-		var socksErr *SocksError
-		if errors.As(err, &socksErr) {
-			sendReply(conn, socksErr.Code, unspecifiedAddr, logger)
-		} else {
-			sendReply(conn, 0x01, unspecifiedAddr, logger)
-		}
-		return err
+	args := CommandArgs{
+		conn: conn,
+		dst:  ip,
+		callback: func(bind netip.AddrPort) error {
+			return sendReply(conn, 0x00, bind, logger)
+		},
+		logger: logger,
 	}
 
-	replyErr := sendReply(conn, 0x00, bind, logger)
-	if replyErr != nil {
-		return replyErr
-	}
-
-	return handler.Handle()
+	return handler(&args)
 }
 
-func readRequest(conn net.Conn, logger *slog.Logger) (Command, netip.AddrPort, error) {
+func readRequest(conn net.Conn) (CommandFunc, netip.AddrPort, error) {
 	buf, err := readBytes(conn, 4)
 	if err != nil {
 		return nil, netip.AddrPort{}, err
@@ -243,13 +240,13 @@ func readRequest(conn net.Conn, logger *slog.Logger) (Command, netip.AddrPort, e
 		return nil, netip.AddrPort{}, errInvalidVersion
 	}
 
-	var command Command
+	var command CommandFunc
 
 	switch buf[1] {
 	case 0x01:
-		command = &connect{src: conn}
+		command = handleConnectCommand
 	case 0x03:
-		command = &udpAssociate{src: conn, logger: logger}
+		command = handleUDPCommand
 	default:
 		return nil, netip.AddrPort{}, errUnsupportedCommand
 	}

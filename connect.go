@@ -5,27 +5,21 @@ import (
 	"net/netip"
 )
 
-type connect struct {
-	src net.Conn
-	dst net.Conn
-}
-
-func (c *connect) Init(ip netip.AddrPort) (netip.AddrPort, error) {
-	dst, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(ip))
+func handleConnectCommand(args *CommandArgs) error {
+	dst, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(args.dst))
 	if err != nil {
-		return netip.AddrPort{}, err
+		return err
 	}
+	defer dst.Close()
 
 	bind, err := netip.ParseAddrPort(dst.LocalAddr().String())
 	if err != nil {
-		return netip.AddrPort{}, err
+		return err
 	}
 
-	c.dst = dst
+	if err := args.callback(bind); err != nil {
+		return err
+	}
 
-	return bind, nil
-}
-
-func (c *connect) Handle() error {
-	return copyStreams(c.src, c.dst)
+	return copyStreams(args.conn, dst)
 }
