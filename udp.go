@@ -11,6 +11,9 @@ import (
 	"net/netip"
 )
 
+// in practice this is probably way too large.
+const maxBufferSize = 65507
+
 func handleUDPCommand(args *CommandArgs) error {
 	listener, err := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   args.dst.Addr().AsSlice(),
@@ -55,9 +58,8 @@ func handleUDPCommand(args *CommandArgs) error {
 }
 
 func forwardUDP(listener *net.UDPConn, logger *slog.Logger) error {
+	buf := make([]byte, maxBufferSize)
 	for {
-		// TODO: improve buffers
-		buf := make([]byte, 2048)
 		n, _, _, _, err := listener.ReadMsgUDPAddrPort(buf, nil)
 		if err != nil {
 			return err
