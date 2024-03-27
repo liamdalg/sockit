@@ -30,7 +30,7 @@ func handleUDPCommand(args *CommandArgs) error {
 	// 	return err
 	// }
 
-	logger := args.logger.With(slog.String("bind", bind.String()))
+	logger := args.logger.With(slog.String("mode", "udp"), slog.String("bind", bind.String()))
 
 	if err := args.callback(bind); err != nil {
 		return err
@@ -53,53 +53,65 @@ func forwardUDP(listener *net.UDPConn, logger *slog.Logger) error {
 			return err
 		}
 
-		// TODO: support filtering by source address
-
-		if buf[0] != 0x00 && buf[1] != 0x00 {
-			logger.Debug("Ignoring malformed datagram", slog.String("error", err.Error()))
-			continue
-		}
-
-		// frag := buf[2]
-		reader := bytes.NewReader(buf[4:n])
-		dst, err := parseAddress(buf[3], reader)
+		err = forwardMessage(buf[:n], logger)
 		if err != nil {
-			logger.Debug("Ignoring datagram with invalid address", slog.String("error", err.Error()))
-			continue
-		}
-
-		portOctets, err := readBytes(reader, 2)
-		if err != nil {
-			continue
-		}
-
-		port := binary.BigEndian.Uint16(portOctets)
-
-		data, err := io.ReadAll(reader)
-		if err != nil {
-			logger.Debug("This shouldn't happen")
-			continue
-		}
-
-		remote := netip.AddrPortFrom(dst, port)
-
-		conn, err := net.DialUDP(
-			"udp",
-			nil,
-			net.UDPAddrFromAddrPort(remote),
-		)
-		if err != nil {
-			logger.Debug("Couldn't connect", slog.String("err", err.Error()), slog.String("remote", remote.String()))
-			continue
-		}
-		defer conn.Close()
-
-		logger.Debug("Writing", slog.String("remote", remote.String()), slog.String("msg", string(data)))
-
-		_, _, err = conn.WriteMsgUDP(data, nil, nil)
-		if err != nil {
-			logger.Debug("Stupid writing", slog.String("err", err.Error()))
-			continue
+			logger.Error("Caught error when processing datagram", slog.String("error", err.Error()))
 		}
 	}
+}
+
+func forwardMessage(datagram []byte, logger *slog.Logger) error {
+	// TODO: support filtering by source address
+	if datagram[0] != 0x00 && datagram[1] != 0x00 {
+		logger.Debug("Ignoring malformed datagram")
+		return nil
+	}
+
+	// TODO: implement fragmenting
+	if datagram[2] == 0x02 {
+		logger.Debug("Dropping fragmented datagram")
+		return nil
+	}
+
+	reader := bytes.NewReader(datagram[4:])
+	dst, err := parseAddress(datagram[3], reader)
+	if err != nil {
+		logger.Debug("Ignoring datagram with invalid address", slog.String("error", err.Error()))
+		return nil
+	}
+
+	portOctets, err := readBytes(reader, 2)
+	if err != nil {
+		logger.Debug("Ignoring datagram with invalid port", slog.String("error", err.Error()))
+		return nil
+	}
+
+	port := binary.BigEndian.Uint16(portOctets)
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		logger.Debug("You shouldn't see this log ever", slog.String("error", err.Error()))
+		return nil
+	}
+
+	remote := netip.AddrPortFrom(dst, port)
+
+	conn, err := net.DialUDP(
+		"udp",
+		nil,
+		net.UDPAddrFromAddrPort(remote),
+	)
+	if err != nil {
+		logger.Debug("Couldn't connect", slog.String("err", err.Error()), slog.String("remote", remote.String()))
+		return nil
+	}
+	defer conn.Close()
+
+	_, _, err = conn.WriteMsgUDP(data, nil, nil)
+	if err != nil {
+		logger.Debug("Stupid writing", slog.String("err", err.Error()))
+		return nil
+	}
+
+	return nil
 }
