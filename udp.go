@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -36,9 +37,21 @@ func handleUDPCommand(args *CommandArgs) error {
 		return err
 	}
 
+	logger.Info("New UDP client connected")
+
 	go waitForClose(args.conn, listener)
 
-	return forwardUDP(listener, logger)
+	if err := forwardUDP(listener, logger); err != nil {
+		var reason string
+		if errors.Is(err, net.ErrClosed) {
+			reason = "closed"
+		} else {
+			reason = "error: " + err.Error()
+		}
+		logger.Info("UDP client disconnected", slog.String("reason", reason))
+	}
+
+	return nil
 }
 
 func forwardUDP(listener *net.UDPConn, logger *slog.Logger) error {
@@ -47,9 +60,6 @@ func forwardUDP(listener *net.UDPConn, logger *slog.Logger) error {
 		buf := make([]byte, 2048)
 		n, _, _, _, err := listener.ReadMsgUDPAddrPort(buf, nil)
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return nil
-			}
 			return err
 		}
 
@@ -90,8 +100,8 @@ func forwardMessage(datagram []byte, logger *slog.Logger) error {
 
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		logger.Debug("You shouldn't see this log ever", slog.String("error", err.Error()))
-		return nil
+		// this shouldn't ever happen since reader is wrapping an in memory buffer
+		return fmt.Errorf("failed to read datagram: %w", err)
 	}
 
 	remote := netip.AddrPortFrom(dst, port)
@@ -109,8 +119,7 @@ func forwardMessage(datagram []byte, logger *slog.Logger) error {
 
 	_, _, err = conn.WriteMsgUDP(data, nil, nil)
 	if err != nil {
-		logger.Debug("Stupid writing", slog.String("err", err.Error()))
-		return nil
+		return fmt.Errorf("failed to write datagram: %w", err)
 	}
 
 	return nil
