@@ -78,7 +78,7 @@ func forwardMessage(datagram []byte, logger *slog.Logger) error {
 	}
 
 	// TODO: implement fragmenting
-	if datagram[2] == 0x02 {
+	if datagram[2] != 0x00 {
 		logger.Debug("Dropping fragmented datagram")
 		return nil
 	}
