@@ -30,14 +30,11 @@ func (*DefaultMethod) Negotiate(net.Conn) error {
 
 type ProxyOption func(*Proxy) error
 
-type CommandArgs struct {
-	conn     net.Conn
-	dst      netip.AddrPort
-	callback func(netip.AddrPort) error
-	logger   *slog.Logger
+type Command interface {
+	Process() error
+	Bind() netip.AddrPort
+	Close() error
 }
-
-type CommandFunc func(*CommandArgs) error
 
 const (
 	addressTypeIPV4   byte = 0x01
@@ -207,7 +204,7 @@ func (p *Proxy) handshake(conn net.Conn) error {
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	logger.Debug("Handling request")
 
-	handler, ip, err := readRequest(conn)
+	command, err := readRequest(conn, logger)
 	if err != nil {
 		var socksErr *SocksError
 		if errors.As(err, &socksErr) {
@@ -217,53 +214,47 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 		}
 		return err
 	}
+	defer command.Close()
 
-	args := CommandArgs{
-		conn: conn,
-		dst:  ip,
-		callback: func(bind netip.AddrPort) error {
-			return sendReply(conn, 0x00, bind, logger)
-		},
-		logger: logger,
+	if err := sendReply(conn, 0x00, command.Bind(), logger); err != nil {
+		return err
 	}
 
-	return handler(&args)
+	return command.Process()
 }
 
-func readRequest(conn net.Conn) (CommandFunc, netip.AddrPort, error) {
+func readRequest(conn net.Conn, logger *slog.Logger) (Command, error) {
 	buf, err := readBytes(conn, 4)
 	if err != nil {
-		return nil, netip.AddrPort{}, err
+		return nil, err
 	}
 
 	if buf[0] != socksVersion {
-		return nil, netip.AddrPort{}, errInvalidVersion
-	}
-
-	var command CommandFunc
-
-	switch buf[1] {
-	case 0x01:
-		command = handleConnectCommand
-	case 0x03:
-		command = handleUDPCommand
-	default:
-		return nil, netip.AddrPort{}, errUnsupportedCommand
+		return nil, errInvalidVersion
 	}
 
 	ip, err := parseAddress(buf[3], conn)
 	if err != nil {
-		return nil, netip.AddrPort{}, errHostUnreachable
+		return nil, errHostUnreachable
 	}
 
 	portOctets, err := readBytes(conn, 2)
 	if err != nil {
-		return nil, netip.AddrPort{}, err
+		return nil, err
 	}
 
 	port := binary.BigEndian.Uint16(portOctets)
 
-	return command, netip.AddrPortFrom(ip, port), nil
+	// TODO: don't even bother parsing address if command is wrong
+
+	switch buf[1] {
+	case 0x01:
+		return establishConnect(conn, netip.AddrPortFrom(ip, port), logger)
+	case 0x03:
+		return establishUDP(netip.AddrPortFrom(ip, port), logger)
+	default:
+		return nil, errUnsupportedCommand
+	}
 }
 
 func sendReply(conn net.Conn, status byte, bind netip.AddrPort, logger *slog.Logger) error {

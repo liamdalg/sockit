@@ -1,25 +1,50 @@
 package sockit
 
 import (
+	"log/slog"
 	"net"
 	"net/netip"
 )
 
-func handleConnectCommand(args *CommandArgs) error {
-	dst, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(args.dst))
+type Connect struct {
+	socket net.Conn
+	remote net.Conn
+	bind   netip.AddrPort
+	logger *slog.Logger
+}
+
+func establishConnect(socket net.Conn, dst netip.AddrPort, logger *slog.Logger) (*Connect, error) {
+	remote, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(dst))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer dst.Close()
 
-	bind, err := netip.ParseAddrPort(dst.LocalAddr().String())
+	bind, err := netip.ParseAddrPort(remote.LocalAddr().String())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := args.callback(bind); err != nil {
-		return err
-	}
+	logger = logger.With(slog.String("command", "CONNECT"), slog.String("bind", bind.String()))
+	logger.Info("New CONNECT client established")
 
-	return copyStreams(args.conn, dst)
+	return &Connect{
+		socket: socket,
+		remote: remote,
+		bind:   bind,
+		logger: logger,
+	}, nil
+}
+
+func (c *Connect) Process() error {
+	return copyStreams(c.socket, c.remote)
+}
+
+func (c *Connect) Bind() netip.AddrPort {
+	return c.bind
+}
+
+func (c *Connect) Close() error {
+	c.socket.Close()
+	c.remote.Close()
+	return nil
 }

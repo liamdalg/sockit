@@ -11,90 +11,99 @@ import (
 	"net/netip"
 )
 
+type UDP struct {
+	socket *net.UDPConn
+	bind   netip.AddrPort
+	logger *slog.Logger
+}
+
 // in practice this is probably way too large.
 const maxBufferSize = 65507
 
-func handleUDPCommand(args *CommandArgs) error {
-	listener, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   args.dst.Addr().AsSlice(),
+func establishUDP(dst netip.AddrPort, logger *slog.Logger) (*UDP, error) {
+	socket, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   dst.Addr().AsSlice(),
 		Port: 0,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer listener.Close()
 
-	bind, err := netip.ParseAddrPort(listener.LocalAddr().String())
+	bind, err := netip.ParseAddrPort(socket.LocalAddr().String())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// addr, err := netip.ParseAddrPort(args.conn.RemoteAddr().String())
-	// if err != nil {
-	// 	return err
-	// }
+	logger = logger.With(slog.String("mode", "udp"), slog.String("bind", bind.String()))
+	logger.Info("New UDP client established")
 
-	logger := args.logger.With(slog.String("mode", "udp"), slog.String("bind", bind.String()))
+	return &UDP{
+		socket: socket,
+		bind:   bind,
+		logger: logger,
+	}, nil
+}
 
-	if err := args.callback(bind); err != nil {
-		return err
-	}
-
-	logger.Info("New UDP client connected")
-
-	go waitForClose(args.conn, listener)
-
-	if err := forwardUDP(listener, logger); err != nil {
+func (u *UDP) Process() error {
+	if err := u.beginForwarding(); err != nil {
 		var reason string
 		if errors.Is(err, net.ErrClosed) {
 			reason = "closed"
 		} else {
 			reason = "error: " + err.Error()
 		}
-		logger.Info("UDP client disconnected", slog.String("reason", reason))
+		u.logger.Info("UDP client disconnected", slog.String("reason", reason))
 	}
 
 	return nil
 }
 
-func forwardUDP(listener *net.UDPConn, logger *slog.Logger) error {
+func (u *UDP) Bind() netip.AddrPort {
+	return u.bind
+}
+
+func (u *UDP) Close() error {
+	return u.socket.Close()
+}
+
+func (u *UDP) beginForwarding() error {
 	buf := make([]byte, maxBufferSize)
 	for {
-		n, _, _, _, err := listener.ReadMsgUDPAddrPort(buf, nil)
+		n, _, _, _, err := u.socket.ReadMsgUDPAddrPort(buf, nil)
 		if err != nil {
 			return err
 		}
 
-		err = forwardMessage(buf[:n], logger)
+		err = u.forwardMessage(buf[:n])
 		if err != nil {
-			logger.Error("Caught error when processing datagram", slog.String("error", err.Error()))
+			u.logger.Error("Caught error when processing datagram", slog.String("error", err.Error()))
 		}
 	}
 }
 
-func forwardMessage(datagram []byte, logger *slog.Logger) error {
+func (u *UDP) forwardMessage(datagram []byte) error {
 	// TODO: support filtering by source address
 	if datagram[0] != 0x00 && datagram[1] != 0x00 {
-		logger.Debug("Ignoring malformed datagram")
+		u.logger.Debug("Ignoring malformed datagram")
 		return nil
 	}
 
 	// TODO: implement fragmenting
 	if datagram[2] != 0x00 {
-		logger.Debug("Dropping fragmented datagram")
+		u.logger.Debug("Dropping fragmented datagram")
 		return nil
 	}
 
 	reader := bytes.NewReader(datagram[4:])
 	dst, err := parseAddress(datagram[3], reader)
 	if err != nil {
-		logger.Debug("Ignoring datagram with invalid address", slog.String("error", err.Error()))
+		u.logger.Debug("Ignoring datagram with invalid address", slog.String("error", err.Error()))
 		return nil
 	}
 
 	portOctets, err := readBytes(reader, 2)
 	if err != nil {
-		logger.Debug("Ignoring datagram with invalid port", slog.String("error", err.Error()))
+		u.logger.Debug("Ignoring datagram with invalid port", slog.String("error", err.Error()))
 		return nil
 	}
 
@@ -114,7 +123,7 @@ func forwardMessage(datagram []byte, logger *slog.Logger) error {
 		net.UDPAddrFromAddrPort(remote),
 	)
 	if err != nil {
-		logger.Debug("Couldn't connect", slog.String("err", err.Error()), slog.String("remote", remote.String()))
+		u.logger.Debug("Couldn't connect", slog.String("err", err.Error()), slog.String("remote", remote.String()))
 		return nil
 	}
 	defer conn.Close()
