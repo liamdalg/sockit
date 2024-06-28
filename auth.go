@@ -29,7 +29,7 @@ func WithUserPassAuth(users ...User) ProxyOption {
 			p.methods = map[byte]MethodNegotiator{}
 		}
 
-		p.methods[0x02] = &UserPassMethod{users: users}
+		p.methods[methodAuth] = &UserPassMethod{users: users}
 		return nil
 	}
 }

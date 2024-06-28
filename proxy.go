@@ -40,7 +40,14 @@ const (
 	addressTypeIPV4   byte = 0x01
 	addressTypeDomain byte = 0x03
 	addressTypeIPV6   byte = 0x04
-	socksVersion      byte = 0x05
+
+	methodNoAuth byte = 0x00
+	methodAuth   byte = 0x02
+
+	socksVersion byte = 0x05
+
+	commandConnect byte = 0x01
+	commandUDP     byte = 0x03
 )
 
 var (
@@ -53,6 +60,10 @@ var (
 		Code:    0xFF,
 	}
 
+	errServerError = &SocksError{
+		Message: "general SOCKS server failure",
+		Code:    0x01,
+	}
 	errNetworkUnreachable = &SocksError{
 		Message: "network unreachable",
 		Code:    0x03,
@@ -118,7 +129,7 @@ func WithLogger(logger *slog.Logger) ProxyOption {
 func (p *Proxy) applyDefaults() error {
 	if p.methods == nil {
 		p.methods = map[byte]MethodNegotiator{}
-		p.methods[0x00] = &DefaultMethod{}
+		p.methods[methodNoAuth] = &DefaultMethod{}
 	}
 
 	if p._logger == nil {
@@ -245,12 +256,10 @@ func readRequest(conn net.Conn, logger *slog.Logger) (Command, error) {
 
 	port := binary.BigEndian.Uint16(portOctets)
 
-	// TODO: don't even bother parsing address if command is wrong
-
 	switch buf[1] {
-	case 0x01:
+	case commandConnect:
 		return establishConnect(conn, netip.AddrPortFrom(ip, port), logger)
-	case 0x03:
+	case commandUDP:
 		return establishUDP(netip.AddrPortFrom(ip, port), logger)
 	default:
 		return nil, errUnsupportedCommand
