@@ -2,6 +2,7 @@ package sockit
 
 import (
 	"errors"
+	"fmt"
 	"net"
 )
 
@@ -56,14 +57,15 @@ func (u *UserPassMethod) Negotiate(conn net.Conn) error {
 
 	for _, user := range u.users {
 		if user.Username == string(username) && user.Password == string(password) {
-			_, err := conn.Write([]byte{socksVersion, 0x00})
-			return err
+			if _, err := conn.Write([]byte{socksVersion, 0x00}); err != nil {
+				return fmt.Errorf("failed to write auth success: %w", err)
+			}
+			return nil
 		}
 	}
 
-	_, err = conn.Write([]byte{socksVersion, 0x01})
-	if err != nil {
-		return err
+	if _, err = conn.Write([]byte{socksVersion, 0x01}); err != nil {
+		return fmt.Errorf("failed to write auth failure: %w", err)
 	}
 
 	return errUnauthorised
