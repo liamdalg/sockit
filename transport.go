@@ -12,12 +12,12 @@ func copyStreams(a io.ReadWriteCloser, b io.ReadWriteCloser) error {
 
 	g.Go(func() error {
 		if _, err := io.Copy(a, b); err != nil {
-			return fmt.Errorf("failed to copy from stream b to a: %w", err)
+			return fmt.Errorf("failed to copy from stream a to b: %w", err)
 		}
 		return nil
 	})
 	g.Go(func() error {
-		if _, err := io.Copy(a, b); err != nil {
+		if _, err := io.Copy(b, a); err != nil {
 			return fmt.Errorf("failed to copy from stream b to a: %w", err)
 		}
 		return nil
