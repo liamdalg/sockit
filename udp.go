@@ -26,12 +26,12 @@ func establishUDP(dst netip.AddrPort, logger *slog.Logger) (*UDP, error) {
 		Port: 0,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create udp listener: %w", err)
 	}
 
 	bind, err := netip.ParseAddrPort(socket.LocalAddr().String())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse udp address: %w", err)
 	}
 
 	logger = logger.With(slog.String("mode", "udp"), slog.String("bind", bind.String()))
@@ -63,6 +63,7 @@ func (u *UDP) Bind() netip.AddrPort {
 }
 
 func (u *UDP) Close() error {
+	//nolint:wrapcheck
 	return u.socket.Close()
 }
 
@@ -71,7 +72,7 @@ func (u *UDP) beginForwarding() error {
 	for {
 		n, _, _, _, err := u.socket.ReadMsgUDPAddrPort(buf, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to read UDP message: %w", err)
 		}
 
 		err = u.forwardMessage(buf[:n])

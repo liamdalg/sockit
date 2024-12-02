@@ -78,6 +78,8 @@ var (
 	}
 
 	unspecifiedAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
+
+	errMalformedIP = errors.New("malformed IP address")
 )
 
 type SocksError struct {
@@ -194,22 +196,21 @@ func (p *Proxy) handshake(conn net.Conn) error {
 	}
 
 	if method == 0xFF {
-		_, err := conn.Write([]byte{socksVersion, 0xFF})
-		if err != nil {
-			return err
-		}
-
+		// fine to ignore errors here, it's already fatal
+		_, _ = conn.Write([]byte{socksVersion, 0xFF})
 		return errNoAcceptableMethods
 	}
 
 	_, err = conn.Write([]byte{socksVersion, method})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to send proxy method: %w", err)
 	}
 
-	err = p.methods[method].Negotiate(conn)
+	if err = p.methods[method].Negotiate(conn); err != nil {
+		return fmt.Errorf("failed to negotiate proxy method: %w", err)
+	}
 
-	return err
+	return nil
 }
 
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
@@ -219,9 +220,9 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	if err != nil {
 		var socksErr *SocksError
 		if errors.As(err, &socksErr) {
-			sendReply(conn, socksErr.Code, unspecifiedAddr, logger)
+			_ = sendReply(conn, socksErr.Code, unspecifiedAddr, logger)
 		} else {
-			sendReply(conn, 0x01, unspecifiedAddr, logger)
+			_ = sendReply(conn, 0x01, unspecifiedAddr, logger)
 		}
 		return err
 	}
@@ -231,7 +232,11 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 		return err
 	}
 
-	return command.Process()
+	if err := command.Process(); err != nil {
+		return fmt.Errorf("failed to process command: %w", err)
+	}
+
+	return nil
 }
 
 func readRequest(conn net.Conn, logger *slog.Logger) (Command, error) {
@@ -284,8 +289,10 @@ func sendReply(conn net.Conn, status byte, bind netip.AddrPort, logger *slog.Log
 
 	logger.Debug("Sending handshake reply", slog.String("buffer", hex.EncodeToString(response)))
 
-	_, err := conn.Write(response)
-	return err
+	if _, err := conn.Write(response); err != nil {
+		return fmt.Errorf("failed to write handshake: %w", err)
+	}
+	return nil
 }
 
 func parseAddress(addrType byte, reader io.Reader) (netip.Addr, error) {
@@ -297,12 +304,12 @@ func parseAddress(addrType byte, reader io.Reader) (netip.Addr, error) {
 
 		ips, err := net.LookupIP(string(domain))
 		if err != nil {
-			return netip.Addr{}, err
+			return netip.Addr{}, fmt.Errorf("domain did not resolve: %w", err)
 		}
 
 		ip, ok := netip.AddrFromSlice(ips[0])
 		if !ok {
-			return netip.Addr{}, errors.New("domain resolved to invalid ip")
+			return netip.Addr{}, errMalformedIP
 		}
 
 		return ip, nil
@@ -314,7 +321,7 @@ func parseAddress(addrType byte, reader io.Reader) (netip.Addr, error) {
 	} else if addrType == addressTypeIPV6 {
 		byteLength = 16
 	} else {
-		return netip.Addr{}, errors.New("malformed address")
+		return netip.Addr{}, errMalformedIP
 	}
 
 	buf, err := readBytes(reader, byteLength)
@@ -324,7 +331,7 @@ func parseAddress(addrType byte, reader io.Reader) (netip.Addr, error) {
 
 	ip, ok := netip.AddrFromSlice(buf)
 	if !ok {
-		return netip.Addr{}, errors.New("malformed ip in address")
+		return netip.Addr{}, errMalformedIP
 	}
 
 	return ip, nil

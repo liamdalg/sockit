@@ -1,6 +1,7 @@
 package sockit
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -16,12 +17,12 @@ type Connect struct {
 func establishConnect(socket net.Conn, dst netip.AddrPort, logger *slog.Logger) (*Connect, error) {
 	remote, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(dst))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to dial tcp: %w", err)
 	}
 
 	bind, err := netip.ParseAddrPort(remote.LocalAddr().String())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse tcp address: %w", err)
 	}
 
 	logger = logger.With(slog.String("command", "CONNECT"), slog.String("bind", bind.String()))

@@ -1,6 +1,7 @@
 package sockit
 
 import (
+	"fmt"
 	"io"
 
 	"golang.org/x/sync/errgroup"
@@ -10,14 +11,19 @@ func copyStreams(a io.ReadWriteCloser, b io.ReadWriteCloser) error {
 	g := errgroup.Group{}
 
 	g.Go(func() error {
-		_, err := io.Copy(a, b)
-		return err
+		if _, err := io.Copy(a, b); err != nil {
+			return fmt.Errorf("failed to copy from stream b to a: %w", err)
+		}
+		return nil
 	})
 	g.Go(func() error {
-		_, err := io.Copy(b, a)
-		return err
+		if _, err := io.Copy(a, b); err != nil {
+			return fmt.Errorf("failed to copy from stream b to a: %w", err)
+		}
+		return nil
 	})
 
+	//nolint:wrapcheck
 	return g.Wait()
 }
 
@@ -34,6 +40,7 @@ func waitForClose(src io.ReadCloser, dst io.Closer) {
 func readBytes(reader io.Reader, n int) ([]byte, error) {
 	buf := make([]byte, n)
 	_, err := io.ReadFull(reader, buf)
+	//nolint:wrapcheck
 	return buf, err
 }
 
