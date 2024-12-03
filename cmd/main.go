@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"net"
 	"os"
 
 	"github.com/liamdalg/sockit"
@@ -9,8 +10,14 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	listener, err := net.Listen("tcp", ":1080")
+	if err != nil {
+		panic(err)
+	}
+
 	proxy, err := sockit.Listen(
-		":1080",
+		listener,
 		sockit.WithLogger(logger),
 		// sockit.WithUserPassAuth(
 		// 	sockit.User{Username: "admin", Password: "password"},

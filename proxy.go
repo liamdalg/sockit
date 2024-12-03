@@ -12,8 +12,8 @@ import (
 )
 
 type Proxy struct {
-	socket  net.Listener
-	methods map[byte]MethodNegotiator
+	listener net.Listener
+	methods  map[byte]MethodNegotiator
 
 	_logger *slog.Logger
 }
@@ -96,14 +96,9 @@ func (e *SocksError) Unwrap() error {
 	return e.Inner
 }
 
-func Listen(address string, options ...ProxyOption) (*Proxy, error) {
-	socket, err := net.Listen("tcp", address)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tcp listener: %w", err)
-	}
-
+func Listen(listener net.Listener, options ...ProxyOption) (*Proxy, error) {
 	p := &Proxy{
-		socket: socket,
+		listener: listener,
 	}
 
 	for _, o := range options {
@@ -113,7 +108,7 @@ func Listen(address string, options ...ProxyOption) (*Proxy, error) {
 		}
 	}
 
-	err = p.applyDefaults()
+	err := p.applyDefaults()
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply defaults: %w", err)
 	}
@@ -143,7 +138,7 @@ func (p *Proxy) applyDefaults() error {
 
 func (p *Proxy) Start() error {
 	for {
-		conn, err := p.socket.Accept()
+		conn, err := p.listener.Accept()
 		if err != nil {
 			// TODO: make not fatal
 			return fmt.Errorf("naughty connection: %w", err)
