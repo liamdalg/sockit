@@ -62,10 +62,10 @@ var (
 		Code:    0xFF,
 	}
 
-	// errServerError = &SocksError{
-	// 	Message: "general SOCKS server failure",
-	// 	Code:    0x01,
-	// }
+	errServerError = &SocksError{
+		Message: "general SOCKS server failure",
+		Code:    0x01,
+	}
 	// errNetworkUnreachable = &SocksError{
 	// 	Message: "network unreachable",
 	// 	Code:    0x03,
@@ -77,6 +77,10 @@ var (
 	errUnsupportedCommand = &SocksError{
 		Message: "unsupported command",
 		Code:    0x07,
+	}
+	errUnsupportedAddressType = &SocksError{
+		Message: "unsupported address type",
+		Code:    0x08,
 	}
 
 	unspecifiedAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
@@ -216,11 +220,11 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	command, err := readRequest(conn, p.resolver, logger)
 	if err != nil {
 		var socksErr *SocksError
-		if errors.As(err, &socksErr) {
-			_ = sendReply(conn, socksErr.Code, unspecifiedAddr, logger)
-		} else {
-			_ = sendReply(conn, 0x01, unspecifiedAddr, logger)
+		if !errors.As(err, &socksErr) {
+			logger.Error("caught unknown error", slog.String("err", err.Error()))
+			socksErr = errServerError
 		}
+		_ = sendReply(conn, socksErr.Code, unspecifiedAddr, logger)
 		return err
 	}
 	defer command.Close()
@@ -248,7 +252,7 @@ func readRequest(conn net.Conn, resolver *net.Resolver, logger *slog.Logger) (Co
 
 	ip, err := parseAddress(conn, resolver, buf[3])
 	if err != nil {
-		return nil, errHostUnreachable
+		return nil, fmt.Errorf("%w: %w", errHostUnreachable, err)
 	}
 
 	portOctets, err := readBytes(conn, 2)
@@ -299,14 +303,14 @@ func parseAddress(reader io.Reader, resolver *net.Resolver, addrType byte) (neti
 			return netip.Addr{}, err
 		}
 
-		ips, err := resolver.LookupAddr(context.TODO(), string(domain))
+		ips, err := resolver.LookupHost(context.TODO(), string(domain))
 		if err != nil {
 			return netip.Addr{}, fmt.Errorf("domain did not resolve: %w", err)
 		}
 
-		ip, ok := netip.AddrFromSlice([]byte(ips[0]))
-		if !ok {
-			return netip.Addr{}, errMalformedIP
+		ip, err := netip.ParseAddr(ips[0])
+		if err != nil {
+			return netip.Addr{}, fmt.Errorf("failed to parse ip: %w", err)
 		}
 
 		return ip, nil
@@ -319,7 +323,7 @@ func parseAddress(reader io.Reader, resolver *net.Resolver, addrType byte) (neti
 	case addressTypeIPV6:
 		byteLength = 16
 	default:
-		return netip.Addr{}, errMalformedIP
+		return netip.Addr{}, errUnsupportedAddressType
 	}
 
 	buf, err := readBytes(reader, byteLength)
