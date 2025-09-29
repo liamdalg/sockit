@@ -1,18 +1,50 @@
+version: "2"
+
 run:
-  concurrency: 0
   tests: false
-
-linters:
-  presets:
-    - bugs
-    - error
-    - format
-    - import
-    - module
-    - performance
-
-  disable:
-    - depguard
-
 issues:
   fix: true
+
+linters:
+  enable:
+    - bodyclose
+    - contextcheck
+    - err113
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gomoddirectives
+    - gosec
+    - gosmopolitan
+    - loggercheck
+    - makezero
+    - musttag
+    - nilerr
+    - nilnesserr
+    - noctx
+    - perfsprint
+    - prealloc
+    - reassign
+    - recvcheck
+    - testifylint
+    - wrapcheck
+  disable:
+    - depguard
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - examples
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports

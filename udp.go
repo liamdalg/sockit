@@ -12,9 +12,10 @@ import (
 )
 
 type UDP struct {
-	socket *net.UDPConn
-	bind   netip.AddrPort
-	logger *slog.Logger
+	socket   *net.UDPConn
+	resolver *net.Resolver
+	bind     netip.AddrPort
+	logger   *slog.Logger
 }
 
 // in practice this is probably way too large.
@@ -96,7 +97,7 @@ func (u *UDP) forwardMessage(datagram []byte) error {
 	}
 
 	reader := bytes.NewReader(datagram[4:])
-	dst, err := parseAddress(datagram[3], reader)
+	dst, err := parseAddress(reader, u.resolver, datagram[3])
 	if err != nil {
 		u.logger.Debug("Ignoring datagram with invalid address", slog.String("error", err.Error()))
 		return nil
