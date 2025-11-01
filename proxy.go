@@ -10,12 +10,16 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
+
+	"golang.org/x/net/proxy"
 )
 
 type Proxy struct {
 	listener net.Listener
 	methods  map[byte]MethodNegotiator
 	resolver *net.Resolver
+	dialer   proxy.Dialer
 
 	_logger *slog.Logger
 }
@@ -85,7 +89,8 @@ var (
 
 	unspecifiedAddr = netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
 
-	errMalformedIP = errors.New("malformed IP address")
+	errMalformedIP       = errors.New("malformed IP address")
+	errUnsupportedParent = errors.New("unsupported parent scheme")
 )
 
 type SocksError struct {
@@ -129,6 +134,38 @@ func WithLogger(logger *slog.Logger) ProxyOption {
 	}
 }
 
+func WithParent(parent *url.URL) ProxyOption {
+	return func(p *Proxy) error {
+		switch parent.Scheme {
+		case "http":
+			// TODO: support this
+			break
+		case "socks5":
+		case "socks5h":
+			// TODO: support auth better?
+			var auth *proxy.Auth
+			if parent.User != nil {
+				password, _ := parent.User.Password()
+				auth = &proxy.Auth{
+					User:     parent.User.Username(),
+					Password: password,
+				}
+			}
+
+			dialer, err := proxy.SOCKS5("tcp", parent.Host, auth, nil)
+			if err != nil {
+				return fmt.Errorf("failed to create dialer for parent: %w", err)
+			}
+
+			p.dialer = dialer
+		default:
+			return fmt.Errorf("%w: %s", errUnsupportedParent, parent.Scheme)
+		}
+
+		return nil
+	}
+}
+
 func (p *Proxy) applyDefaults() error {
 	if p.methods == nil {
 		p.methods = map[byte]MethodNegotiator{}
@@ -137,6 +174,10 @@ func (p *Proxy) applyDefaults() error {
 
 	if p._logger == nil {
 		p._logger = slog.Default()
+	}
+
+	if p.dialer == nil {
+		p.dialer = &net.Dialer{}
 	}
 
 	return nil
@@ -217,7 +258,7 @@ func (p *Proxy) handshake(conn net.Conn) error {
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	logger.Debug("Handling request")
 
-	command, err := readRequest(conn, p.resolver, logger)
+	command, err := readRequest(conn, p.dialer, p.resolver, logger)
 	if err != nil {
 		var socksErr *SocksError
 		if !errors.As(err, &socksErr) {
@@ -240,7 +281,8 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	return nil
 }
 
-func readRequest(conn net.Conn, resolver *net.Resolver, logger *slog.Logger) (Command, error) {
+// TODO: make these private methods?
+func readRequest(conn net.Conn, dialer proxy.Dialer, resolver *net.Resolver, logger *slog.Logger) (Command, error) {
 	buf, err := readBytes(conn, 4)
 	if err != nil {
 		return nil, err
@@ -264,7 +306,7 @@ func readRequest(conn net.Conn, resolver *net.Resolver, logger *slog.Logger) (Co
 
 	switch buf[1] {
 	case commandConnect:
-		return establishConnect(conn, netip.AddrPortFrom(ip, port), logger)
+		return establishConnect(dialer, conn, netip.AddrPortFrom(ip, port), logger)
 	case commandUDP:
 		return establishUDP(netip.AddrPortFrom(ip, port), logger)
 	default:

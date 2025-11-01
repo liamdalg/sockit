@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+
+	"golang.org/x/net/proxy"
 )
 
 type Connect struct {
@@ -14,8 +16,8 @@ type Connect struct {
 	logger *slog.Logger
 }
 
-func establishConnect(socket net.Conn, dst netip.AddrPort, logger *slog.Logger) (*Connect, error) {
-	remote, err := net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(dst))
+func establishConnect(dialer proxy.Dialer, socket net.Conn, dst netip.AddrPort, logger *slog.Logger) (*Connect, error) {
+	remote, err := dialer.Dial("tcp", dst.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial tcp: %w", err)
 	}
