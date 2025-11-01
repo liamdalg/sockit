@@ -16,6 +16,8 @@ type UserPassMethod struct {
 }
 
 var (
+	userPassAuthVersion byte = 0x01
+
 	errUnauthorised = errors.New("unauthorised user")
 	errInvalidUsers = errors.New("invalid user auth config")
 )
@@ -57,14 +59,14 @@ func (u *UserPassMethod) Negotiate(conn net.Conn) error {
 
 	for _, user := range u.users {
 		if user.Username == string(username) && user.Password == string(password) {
-			if _, err := conn.Write([]byte{socksVersion, 0x00}); err != nil {
+			if _, err := conn.Write([]byte{userPassAuthVersion, 0x00}); err != nil {
 				return fmt.Errorf("failed to write auth success: %w", err)
 			}
 			return nil
 		}
 	}
 
-	if _, err = conn.Write([]byte{socksVersion, 0x01}); err != nil {
+	if _, err = conn.Write([]byte{userPassAuthVersion, 0x01}); err != nil {
 		return fmt.Errorf("failed to write auth failure: %w", err)
 	}
 
