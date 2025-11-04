@@ -307,8 +307,6 @@ func readRequest(conn net.Conn, dialer proxy.Dialer, resolver *net.Resolver, log
 	switch buf[1] {
 	case commandConnect:
 		return establishConnect(dialer, conn, netip.AddrPortFrom(ip, port), logger)
-	case commandUDP:
-		return establishUDP(netip.AddrPortFrom(ip, port), logger)
 	default:
 		return nil, errUnsupportedCommand
 	}
