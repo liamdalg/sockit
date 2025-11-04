@@ -16,8 +16,8 @@ type Connect struct {
 	logger *slog.Logger
 }
 
-func establishConnect(dialer proxy.Dialer, socket net.Conn, dst netip.AddrPort, logger *slog.Logger) (*Connect, error) {
-	remote, err := dialer.Dial("tcp", dst.String())
+func establishConnect(dialer proxy.Dialer, socket net.Conn, dst string, logger *slog.Logger) (*Connect, error) {
+	remote, err := dialer.Dial("tcp", dst)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial tcp: %w", err)
 	}

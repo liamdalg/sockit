@@ -11,7 +11,9 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 
+	"github.com/liamdalg/sockit/dialer"
 	"golang.org/x/net/proxy"
 )
 
@@ -19,7 +21,9 @@ type Proxy struct {
 	listener net.Listener
 	methods  map[byte]MethodNegotiator
 	resolver *net.Resolver
-	dialer   proxy.Dialer
+
+	parentType string
+	dialer     proxy.Dialer
 
 	_logger *slog.Logger
 }
@@ -138,8 +142,10 @@ func WithParent(parent *url.URL) ProxyOption {
 	return func(p *Proxy) error {
 		switch parent.Scheme {
 		case "http":
-			// TODO: support this
-			break
+			p.dialer = &dialer.Http{
+				// TODO: auth?
+				Address: parent.Host,
+			}
 		case "socks5":
 		case "socks5h":
 			// TODO: support auth better?
@@ -258,7 +264,7 @@ func (p *Proxy) handshake(conn net.Conn) error {
 func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 	logger.Debug("Handling request")
 
-	command, err := readRequest(conn, p.dialer, p.resolver, logger)
+	command, err := p.readRequest(conn, logger)
 	if err != nil {
 		var socksErr *SocksError
 		if !errors.As(err, &socksErr) {
@@ -282,7 +288,7 @@ func (p *Proxy) handleRequest(conn net.Conn, logger *slog.Logger) error {
 }
 
 // TODO: make these private methods?
-func readRequest(conn net.Conn, dialer proxy.Dialer, resolver *net.Resolver, logger *slog.Logger) (Command, error) {
+func (p *Proxy) readRequest(conn net.Conn, logger *slog.Logger) (Command, error) {
 	buf, err := readBytes(conn, 4)
 	if err != nil {
 		return nil, err
@@ -292,7 +298,10 @@ func readRequest(conn net.Conn, dialer proxy.Dialer, resolver *net.Resolver, log
 		return nil, errInvalidVersion
 	}
 
-	ip, err := parseAddress(conn, resolver, buf[3])
+	// if socks5h or http(s), we want to pass the host upstream
+	shouldResolve := p.parentType == "socks5"
+
+	address, err := parseAddress(conn, p.resolver, buf[3], shouldResolve)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errHostUnreachable, err)
 	}
@@ -302,11 +311,11 @@ func readRequest(conn net.Conn, dialer proxy.Dialer, resolver *net.Resolver, log
 		return nil, err
 	}
 
-	port := binary.BigEndian.Uint16(portOctets)
+	port := uint64(binary.BigEndian.Uint16(portOctets))
 
 	switch buf[1] {
 	case commandConnect:
-		return establishConnect(dialer, conn, netip.AddrPortFrom(ip, port), logger)
+		return establishConnect(p.dialer, conn, net.JoinHostPort(address, strconv.FormatUint(port, 10)), logger)
 	default:
 		return nil, errUnsupportedCommand
 	}
@@ -336,24 +345,23 @@ func sendReply(conn net.Conn, status byte, bind netip.AddrPort, logger *slog.Log
 	return nil
 }
 
-func parseAddress(reader io.Reader, resolver *net.Resolver, addrType byte) (netip.Addr, error) {
+func parseAddress(reader io.Reader, resolver *net.Resolver, addrType byte, shouldResolve bool) (string, error) {
 	if addrType == addressTypeDomain {
 		domain, err := readBytesFromLength(reader)
 		if err != nil {
-			return netip.Addr{}, err
+			return "", err
+		}
+
+		if !shouldResolve {
+			return string(domain), nil
 		}
 
 		ips, err := resolver.LookupHost(context.TODO(), string(domain))
 		if err != nil {
-			return netip.Addr{}, fmt.Errorf("domain did not resolve: %w", err)
+			return "", fmt.Errorf("domain did not resolve: %w", err)
 		}
 
-		ip, err := netip.ParseAddr(ips[0])
-		if err != nil {
-			return netip.Addr{}, fmt.Errorf("failed to parse ip: %w", err)
-		}
-
-		return ip, nil
+		return ips[0], nil
 	}
 
 	var byteLength int
@@ -363,18 +371,18 @@ func parseAddress(reader io.Reader, resolver *net.Resolver, addrType byte) (neti
 	case addressTypeIPV6:
 		byteLength = 16
 	default:
-		return netip.Addr{}, errUnsupportedAddressType
+		return "", errUnsupportedAddressType
 	}
 
 	buf, err := readBytes(reader, byteLength)
 	if err != nil {
-		return netip.Addr{}, err
+		return "", err
 	}
 
 	ip, ok := netip.AddrFromSlice(buf)
 	if !ok {
-		return netip.Addr{}, errMalformedIP
+		return "", errMalformedIP
 	}
 
-	return ip, nil
+	return ip.String(), nil
 }
